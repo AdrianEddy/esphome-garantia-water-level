@@ -17,6 +17,8 @@ and you want to see the percentage in your Home Assistant dashboard? Let's do it
 ![boards](media/boards.jpg)
 ![connection](media/connection.jpg)
 
+You also have to replace the on-board voltage regulator **8L05A** to a more powerful one [KF50BD-TR](https://www.st.com/resource/en/datasheet/kfxx.pdf)
+
 # 3. ESPHome component
 
 ```yaml

@@ -202,7 +202,7 @@ It looks like we're way off with out readings and the ATtiny is bitbanging the d
 
 After many hours of struggling to read accurate digits and trying every possible interrupt configuration I decided to actually check how fast is GPIO readout on ESP32-S3. I did some googling and it turns out that its actually [**pretty damn slow**](https://www.reddit.com/r/esp32/comments/f529hf/results_comparing_the_speeds_of_different_gpio/). At least for what we need.
 
-We can do `gpio_get_level` at about 4 MHz (in 160 MHz mode). That's pretty fast, but have 7 reads per loop and we end up with the iteration at ~570 kHZ. We need 6 times more speed!
+We can do `gpio_get_level` at about 4 MHz (in 160 MHz mode). That's pretty fast, but we have 7 reads per loop and we end up with the iteration at ~570 kHz. We need 6 times more speed!
 
 ### Dedicated GPIO to the rescue
 
