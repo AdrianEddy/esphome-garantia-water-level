@@ -1,0 +1,5 @@
+/.esphome/
+/secrets.yaml
+garantia-water-level.yaml
+__pycache__
+*.mp4
