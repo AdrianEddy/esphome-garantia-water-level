@@ -102,9 +102,9 @@ Everything below is parameterised on `f_empty` and `f_full`.
 Common to both: 12 V DC supply, RCA jack (contact A = +12 V feed, contact B = signal), 110 Ω shunt from signal to GND, one common GND.
 
 **Power:** a Mean Well HDR-15-12 works, but in the KNX version I skipped the extra PSU altogether: the **yellow/white pair** of the KNX cable
-carries the 30 V *auxiliary* (unchoked) output of the KNX power supply, and a cheap DC-DC buck module (LM2596-type, rated ≥36 V in)
-drops it to 12.0 V. The board draws ~20 mA at 30 V. Take it only from the auxiliary output / yellow-white pair – **never from the
-red/black bus pair**, which carries the telegrams and must not see a switching load.
+carries the 30 V *auxiliary* (unchoked) output of the KNX power supply, and **Traco Power TMR 2412** drops it to 12.0 V.
+ The board draws ~20 mA at 30 V. Take it only from the auxiliary output / yellow-white pair – **never from the
+red/black bus pair**, which carries the telegrams and must not see a switching load. **Do not** use a cheap DC-DC buck module (LM2596-type) - 12V GND MUST be isolated from KNX GND
 
 ---
 
