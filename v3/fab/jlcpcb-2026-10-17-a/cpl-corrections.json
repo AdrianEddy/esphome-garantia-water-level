@@ -1,0 +1,108 @@
+{
+ "schema_version": 2,
+ "policy_id": "garantia-knx-direct-jlcpcb-cpl-2026-10-17",
+ "provenance": "JLC/LCSC EasyEDA footprints (lceda.cn /api/products/<C>/components; 23 from knx-rgbic-doublesided's cache, 13 fetched 2026-10-17), matched pad by pad against the board's pads at 0/90/180/270 (cplmatch.py of the kicad-jlc-playbook). Top: P = Mid + rot(R) p. Bottom: P = Mid + rot(-R) mirror_x(p), the 'seen from below' convention that gives R = 180 - KiCad rotation for lands that match KiCad's (kicad-jlcpcb-tools' rule). Mid X/Y is where JLC's footprint origin (= its pad-box centre) must go; offsets are Mid minus KiCad's footprint origin, CPL frame (mm, Y up). rotation_delta is CPL rotation minus the base (top: KiCad rotation; bottom: 180 - KiCad rotation). Only parts with a delta or an offset are listed. The CPL file is written directly from the fit; this table documents it.",
+ "component_overrides": [
+  {
+   "designator": "L2",
+   "side": "top",
+   "lcsc": "C370497",
+   "jlc_footprint": "IND-SMD_L5.0-W5.0",
+   "kicad_rotation": 0.0,
+   "cpl_rotation": 180,
+   "rotation_delta": 180.0,
+   "offset_x_mm": -0.0,
+   "offset_y_mm": 0.0,
+   "worst_pad_miss_mm": 0.15
+  },
+  {
+   "designator": "U2",
+   "side": "bottom",
+   "lcsc": "C513000",
+   "jlc_footprint": "QFN-40_L6.0-W6.0-P0.50-BL-EP",
+   "kicad_rotation": 270.0,
+   "cpl_rotation": 180,
+   "rotation_delta": 270.0,
+   "offset_x_mm": -0.0,
+   "offset_y_mm": -0.0,
+   "worst_pad_miss_mm": 0.073
+  },
+  {
+   "designator": "U3",
+   "side": "top",
+   "lcsc": "C5270237",
+   "jlc_footprint": "UFQFPN-32_L5.0-W5.0-P0.50-BL-EP3.5",
+   "kicad_rotation": 270.0,
+   "cpl_rotation": 180,
+   "rotation_delta": 270.0,
+   "offset_x_mm": -0.0,
+   "offset_y_mm": -0.0,
+   "worst_pad_miss_mm": 0.063
+  },
+  {
+   "designator": "U4",
+   "side": "bottom",
+   "lcsc": "C109227",
+   "jlc_footprint": "OPTO-SMD-4_L4.6-W6.5-P2.54-LS10.3-BL",
+   "kicad_rotation": 180.0,
+   "cpl_rotation": 270,
+   "rotation_delta": 270.0,
+   "offset_x_mm": 0.0,
+   "offset_y_mm": 0.0,
+   "worst_pad_miss_mm": 0.235
+  },
+  {
+   "designator": "U5",
+   "side": "bottom",
+   "lcsc": "C57474",
+   "jlc_footprint": "SOIC-8_L4.9-W3.9-P1.27-LS6.0-BL",
+   "kicad_rotation": 270.0,
+   "cpl_rotation": 180,
+   "rotation_delta": 270.0,
+   "offset_x_mm": 0.0,
+   "offset_y_mm": 0.0,
+   "worst_pad_miss_mm": 0.125
+  }
+ ],
+ "land_differences": {
+  "note": "Parts whose JLC land differs from ours by >= 0.15 mm at the worst pad; all are symmetric about the part centre (offset 0), so the placement is unaffected.",
+  "parts": [
+   {
+    "designator": "D1",
+    "lcsc": "C2481",
+    "jlc_footprint": "SMA_L4.3-W2.6-LS5.2-RD",
+    "worst_pad_miss_mm": 0.2
+   },
+   {
+    "designator": "D2",
+    "lcsc": "C113966",
+    "jlc_footprint": "SMA_L4.3-W2.6-LS5.2-RD",
+    "worst_pad_miss_mm": 0.2
+   },
+   {
+    "designator": "D4",
+    "lcsc": "C2481",
+    "jlc_footprint": "SMA_L4.3-W2.6-LS5.2-RD",
+    "worst_pad_miss_mm": 0.2
+   },
+   {
+    "designator": "D6",
+    "lcsc": "C19077535",
+    "jlc_footprint": "SMA_L4.3-W2.6-LS5.0-RD",
+    "worst_pad_miss_mm": 0.404
+   },
+   {
+    "designator": "D7",
+    "lcsc": "C19077535",
+    "jlc_footprint": "SMA_L4.3-W2.6-LS5.0-RD",
+    "worst_pad_miss_mm": 0.404
+   },
+   {
+    "designator": "U4",
+    "lcsc": "C109227",
+    "jlc_footprint": "OPTO-SMD-4_L4.6-W6.5-P2.54-LS10.3-BL",
+    "worst_pad_miss_mm": 0.235
+   }
+  ]
+ }
+}

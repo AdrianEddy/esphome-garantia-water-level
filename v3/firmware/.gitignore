@@ -1,0 +1,10 @@
+knx-thelsing/
+u3/.pio/
+u3/build/
+u3/*.map
+knxprod/build/
+__pycache__/
+flashkit/dist/
+flashkit/vendor/windows/
+flashkit/vendor/macos-x86_64/
+flashkit/vendor/dfu-util-README.txt

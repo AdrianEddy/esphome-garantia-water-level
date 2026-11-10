@@ -1,0 +1,198 @@
+(kicad_sch
+	(version 20260306)
+	(generator "eeschema")
+	(generator_version "10.0")
+	(uuid "f59142ea-3a1a-4744-98d8-b216a618c33d")
+	(paper "A4")
+	(lib_symbols)
+	(sheet
+		(at 110 90)
+		(size 60 30)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "b105b834-02f7-4499-a0a5-ed68f4a8fd03")
+		(property "Sheetname" "3 MCU"
+			(at 110 89.365 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "03_mcu.kicad_sch"
+			(at 110 120.635 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "garantia-knx-direct"
+				(path "/f59142ea-3a1a-4744-98d8-b216a618c33d"
+					(page "4")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 30 40)
+		(size 60 30)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "b79ab276-6782-4bc3-9123-fea7fb2920c0")
+		(property "Sheetname" "1 Aux power"
+			(at 30 39.365 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "01_aux_power.kicad_sch"
+			(at 30 70.635 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "garantia-knx-direct"
+				(path "/f59142ea-3a1a-4744-98d8-b216a618c33d"
+					(page "2")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 110 40)
+		(size 60 30)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "bdf96127-488a-410b-9367-f937e5107de0")
+		(property "Sheetname" "2 KNX bus interface"
+			(at 110 39.365 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "02_knx.kicad_sch"
+			(at 110 70.635 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "garantia-knx-direct"
+				(path "/f59142ea-3a1a-4744-98d8-b216a618c33d"
+					(page "6")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 30 90)
+		(size 60 30)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "f3e06cbf-d8a2-466d-bd53-3e45448e1b7e")
+		(property "Sheetname" "4 Sensor"
+			(at 30 89.365 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "04_sensor.kicad_sch"
+			(at 30 120.635 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "garantia-knx-direct"
+				(path "/f59142ea-3a1a-4744-98d8-b216a618c33d"
+					(page "5")
+				)
+			)
+		)
+	)
+	(sheet_instances
+		(path "/"
+			(page "1")
+		)
+	)
+	(embedded_fonts no)
+)

@@ -1,0 +1,4 @@
+# The kit scripts must keep their line endings on every checkout (batch labels break with LF only).
+*.cmd text eol=crlf
+*.sh text eol=lf
+*.command text eol=lf

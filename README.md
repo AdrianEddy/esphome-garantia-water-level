@@ -6,11 +6,13 @@ So you have an old-fashioned water tank level module like this one
 
 and you want to see the percentage in your Home Assistant dashboard? Let's do it!
 
-Two ways to get there:
+Three ways to get there:
 
 - **V1** – keep the original controller, sniff its display signals with an ESP32 (below).
 - **V2** – replace the controller with a small board that talks to the tank sensor directly:
   analog 0–5 V output (KNX or ESP32 ADC), or ESP32 pulse counting with a single transistor. [Jump to V2](#v2--replacing-the-controller).
+- **V3** – a KNX device of its own: one small board on the KNX bus that powers the sensor and reports level, frequency
+  and faults straight to KNX, with calibration from Home Assistant and a safe top-up valve control. [Jump to V3](#v3--knx-device).
 
 ---
 
@@ -255,3 +257,170 @@ Drive it separately from Home Assistant Automation, using any standard output (K
 - Measure frequency at the **shunt**, not at LM2917 pin 1 – the coupling network droops the waveform at low frequency and confuses scope counters.
 - A half-full tank gives only a few hundred mV out of the LM2917 – that is correct, the scale is nonlinear (all the resolution sits at the empty end, where the valve decisions are).
 - "Empty" depends on residual water on the probe (we saw 125 vs 145 Hz ≈ 3 % of level). Calibrate to your pump-limit state.
+
+---
+
+# V3 – KNX device
+
+One small board instead of V2 + an analog KNX input module: it plugs into the KNX bus and the 30 V auxiliary pair,
+powers the tank sensor itself, measures its frequency and reports the level straight to KNX. No ESP32, no WiFi.
+
+![V3 board](media/v3_board.jpg)
+
+## What it does
+
+- **KNX device on its own:** NCN5130 transceiver + STM32G0B1 running [thelsing/knx](https://github.com/thelsing/knx), powered from the bus (10 mA).
+- **Powers the sensor** from the yellow/white 30 V auxiliary pair through a **Traco TMR 2412** (isolated 12 V). The garden cable never becomes part of the KNX line.
+- **Reads the sensor like the original controller** (12 V feed, 110 Ω shunt), slices the signal with an LM2903 comparator and sends it across the isolation barrier through an LTV-817S optocoupler.
+- **Measures the period against the NCN5130's crystal** (≤ 50 ppm), not the STM32's RC oscillator (up to 3 % off in a cold garage).
+- **KNX objects:** level %, frequency, volume, sensor fault, low-level alarm, calibration (write the two frequencies, or press "tank is empty / full now"), and a **top-up valve** with safety limits.
+- **Flashing over USB** through the STM32's own ROM bootloader (DFU). No programmer needed.
+
+## How it works
+
+Three galvanically separate domains on a 28 × 46 mm, 4-layer board, kept 2 mm apart on every layer:
+
+```
+ KNX bus (red/black) ──► NCN5130 ──► 3.3 V ──► STM32G0B1 ◄── XCLK 8 MHz from the NCN5130's crystal
+                                                   ▲
+                                                   │  LTV-817S optocoupler (5 kV)
+                                                   │
+ aux 30 V (yellow/white) ─► TMR 2412 ─► 12 V ─► RCA tip ─► sensor ─► RCA shell ─► 110 Ω shunt ─► LM2903
+                            (1.6 kV)                           (floating sensor domain)
+```
+
+- **Why isolated:** inside the KNX power supply the aux minus is tied to the bus minus, and the sensor cable lies
+  underground in a wet tank. A cheap non-isolated buck would make that cable part of the KNX line (see V2's power note).
+- **The RCA shell is the signal**, not ground (as on the original controller), so the jack floats with the sensor domain.
+- **The comparator** compares the shunt voltage with its own long-term average (0.5 s), with hysteresis. It needs no
+  coupling capacitor, so it works from 25 to 145 Hz alike, and a shorted or open cable simply stops the pulses → "sensor fault".
+- **The level** is linear in period: `level = (1/f − 1/f_empty) / (1/f_full − 1/f_empty)` (defaults 145 / 25 Hz, set in ETS or from Home Assistant).
+
+Details, values and reasons: [v3/design.md](v3/design.md).
+
+## Files
+
+| | |
+|---|---|
+| Design document | [v3/design.md](v3/design.md) |
+| KiCad 10 project | [v3/hardware/kicad](v3/hardware/kicad) – schematic, 4-layer PCB, design rules incl. the isolation rules, libraries |
+| JLCPCB package | [v3/fab/jlcpcb-2026-10-17-a](v3/fab/jlcpcb-2026-10-17-a) – Gerbers, BOM, CPL, [ORDER-NOTES.md](v3/fab/jlcpcb-2026-10-17-a/ORDER-NOTES.md) |
+| Firmware source | [v3/firmware](v3/firmware) – STM32 boot manager + KNX application, `.knxprod` generator, flash kit ([README](v3/firmware/README.md)) |
+| Built firmware + `.knxprod` | [v3/release/firmware-1.2](v3/release/firmware-1.2) |
+
+## Building one
+
+- **PCB + assembly:** JLCPCB, 4 layers, both sides assembled (54 SMD parts). Everything to fill in is in
+  [ORDER-NOTES.md](v3/fab/jlcpcb-2026-10-17-a/ORDER-NOTES.md). Check the **STM32G0B1KCU6** stock first: it was out of
+  stock in October 2026; the KCU7 is a drop-in.
+- **Hand-soldered:**
+  - 2 × 2 WAGO 243-131 pins for the WAGO 243-211 (bus, red/grey) and 243-212 (aux, yellow/white) plugs;
+  - the Traco TMR 2412 (TMR 3-2412 fits);
+  - a Keystone 900 RCA jack;
+  - a USB-C breakout on J3 for flashing.
+- **Before the first power-up:** the ohmmeter checks in [design.md](v3/design.md) ("PCB layout rules", "Hand-soldering").
+
+## Flashing
+
+USB doesn't power the board: put it on the KNX bus (red/black), plug a USB cable into the breakout on J3, and **run the laptop on battery** – J3's ground is the KNX minus.
+
+- **New board:** it starts in DFU by itself → flash `garantia-knx-u3-full.hex`.
+- **Updates:** hold the button (SW1) for 3–10 s and release → DFU → flash `garantia-knx-u3-app.hex`.
+- `dfu-util -d 0483:df11 -a 0 -s 0x08001000:leave -D garantia-knx-u3-app.bin`, or STM32CubeProgrammer, or the
+  portable [flash kit](v3/firmware/flashkit) (Windows + macOS scripts that check everything first).
+
+Full procedure: [v3/firmware/README.md](v3/firmware/README.md#flashing-usb-dfu).
+
+## ETS
+
+Import [garantia-knx.knxprod](v3/release/firmware-1.2/garantia-knx.knxprod) (manufacturer 0x00FA, "Garantia tank level"),
+press SW1 briefly (red LED on) to program the individual address, then download the application.
+Calibration defaults to 145 Hz empty / 25 Hz full; top-up control and the low-level alarm are off until you enable them.
+
+## Home Assistant (KNX)
+
+```yaml
+knx:
+  sensor:
+    - name: "Rainwater tank level"          # object 1, DPT 8.010 (0.01 %)
+      state_address: "5/3/12"
+      type: percentV16
+      state_class: measurement
+      sync_state: init
+    - name: "Rainwater tank frequency"      # object 2, DPT 14.033
+      state_address: "5/3/13"
+      type: frequency
+      device_class: frequency
+      state_class: measurement
+      sync_state: init
+    - name: "Rainwater tank volume"         # object 3, DPT 12.1200 (set "Tank volume" in ETS)
+      state_address: "5/3/18"
+      type: volume_liquid_litre
+      device_class: volume_storage
+      state_class: measurement
+      sync_state: init
+  binary_sensor:
+    - name: "Rainwater tank sensor fault"   # object 4, DPT 1.005
+      state_address: "5/3/17"
+      device_class: problem
+      sync_state: init
+    - name: "Rainwater tank low"            # object 5, DPT 1.005 (set "Low-level alarm below" in ETS)
+      state_address: "5/3/16"
+      device_class: problem
+      sync_state: init
+  number:                                   # objects 6/7, DPT 14.033: show and set the calibration
+    - name: "Rainwater tank f empty"
+      address: "5/3/19"
+      state_address: "5/3/19"
+      type: frequency
+      min: 15
+      max: 180
+      step: 0.1
+      mode: box
+    - name: "Rainwater tank f full"
+      address: "5/3/20"
+      state_address: "5/3/20"
+      type: frequency
+      min: 15
+      max: 180
+      step: 0.1
+      mode: box
+  button:                                   # objects 8/9, DPT 1.017: teach the current frequency
+    - name: "Rainwater tank is empty now"
+      address: "5/3/15"
+      payload: 1
+    - name: "Rainwater tank is full now"
+      address: "5/3/14"
+      payload: 1
+```
+
+Use your own group addresses. A teach-in is refused (the number entity then keeps its value) while the reading isn't
+valid, e.g. right after power-up or during a sensor fault.
+
+The frequency arrives as a full float, but Home Assistant displays sensors of the `frequency` device class in whole Hz
+by default (the KNX integration always gives DPT 14.033 that class). To see the decimals, open the sensor's settings
+and set *Display precision*, e.g. 43.27. The level (DPT 8.010) has no device class and shows its decimals as is.
+
+## Top-up valve
+
+Turn on "Top-up valve control" in ETS and link object 10 to a KNX switching actuator channel set to a **staircase /
+timeout function** (e.g. 5 min). The board then:
+
+- opens below 10 % and closes at 12 % (adjustable);
+- repeats ON every minute while filling, so the valve closes by itself if the board or the bus dies;
+- closes on a sensor fault and locks (alarm on object 12) after 30 min of opening per fill, or when the level doesn't rise
+  by 1 % within 10 min – a burst pipe or a dry supply doesn't flood the garden;
+- is enabled / disabled from Home Assistant through object 11 (switching it off and on again also clears a lock);
+- keeps the lock, the enable and the fill time across power cuts.
+
+```yaml
+knx:
+  switch:
+    - name: "Rainwater tank top-up"         # object 11, DPT 1.003
+      address: "5/3/21"
+      state_address: "5/3/21"
+  binary_sensor:
+    - name: "Rainwater tank top-up fault"   # object 12, DPT 1.005
+      state_address: "5/3/22"
+      device_class: problem
+```

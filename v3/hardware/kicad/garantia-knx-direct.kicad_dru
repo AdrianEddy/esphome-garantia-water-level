@@ -1,0 +1,56 @@
+(version 1)
+
+# garantia-knx-direct custom design rules (design.md "PCB layout rules").
+# JLC 4-layer, 1 oz copper: 0.09/0.09 mm capability. This board routes at the
+# Default netclass (0.2 mm) and drops to 0.15 mm only at the QFN fan-outs.
+
+# QFN fan-outs: escapes between 0.5 mm-pitch pads. Only copper touching the
+# courtyard gets 0.15 mm; everything farther out keeps its netclass value.
+(rule "U2 fan-out"
+  (constraint clearance (min 0.15mm))
+  (condition "A.intersectsCourtyard('U2') && (B.memberOfFootprint('U2') || B.intersectsCourtyard('U2'))"))
+(rule "U3 fan-out"
+  (constraint clearance (min 0.15mm))
+  (condition "A.intersectsCourtyard('U3') && (B.memberOfFootprint('U3') || B.intersectsCourtyard('U3'))"))
+
+# Pours connect solidly to SMD pads (and U2's exposed-pad vias).
+(rule "SMD pads solid"
+  (condition "A.Type == 'Pad' && A.Pad_Type == 'SMD' && B.Type == 'Zone'")
+  (constraint zone_connection solid))
+(rule "U2 exposed pad solid"
+  (condition "A.Type == 'Pad' && A.memberOfFootprint('U2') && B.Type == 'Zone'")
+  (constraint zone_connection solid))
+
+# Hand-soldered THT parts: thermal spokes into every pour so a normal iron fills the
+# barrels. Currents are small (bus <= 10 mA, aux ~30 mA, sensor <= 110 mA shorted).
+# Width and gap need min as well as opt, or KiCad ignores the rule.
+(rule "THT thermal reliefs"
+  (condition "A.Type == 'Pad' && (A.memberOfFootprint('J1') || A.memberOfFootprint('J2') || A.memberOfFootprint('J3') || A.memberOfFootprint('J4') || A.memberOfFootprint('PS1')) && B.Type == 'Zone'")
+  (constraint zone_connection thermal_reliefs)
+  (constraint thermal_spoke_width (min 0.5mm) (opt 0.5mm))
+  (constraint thermal_relief_gap (min 0.3mm) (opt 0.3mm)))
+
+# J4's steel shell legs (S1-S3, SENS_SIG) take the sensor cable's pull: solid into the
+# SENS_SIG pour on all four layers, no spokes (owner's request, 2026-10-17). Needs a hot
+# iron when hand-soldering. Pin 1 (SENS_FEED) has no pour of its own net.
+(rule "J4 shell solid"
+  (condition "A.Type == 'Pad' && A.memberOfFootprint('J4') && A.Pad_Number != '1' && B.Type == 'Zone'")
+  (constraint zone_connection solid))
+
+# J1/J2 courtyard overlap (dovetailed WAGO plug pair, 11.5 mm pitch) is intended. KiCad's
+# courtyard-overlap test can't be waived here; it is excluded once in the DRC dialog.
+
+# Kept LAST on purpose: a later matching rule overrides an earlier one.
+# Galvanic isolation (design.md hard rules): the three domains keep >= 2 mm on every
+# layer, for copper and for plated-hole walls. Only PS1 (aux <-> sensor) and U4
+# (sensor <-> island) bridge a gap; their own pad rows are farther apart than 2 mm.
+# Net patterns are KiCad's real names (local labels carry the sheet path). PS1 pin 3
+# (Remote) and U5 pin 7 are live pins, so they belong to AUX and SENS, not exempt.
+(rule "Isolation KNX island 2 mm"
+  (constraint clearance (min 2mm))
+  (constraint hole_clearance (min 2mm))
+  (condition "(A.NetName == '/2 KNX bus interface/*' || A.NetName == '/3 MCU/*' || A.NetName == 'GND_KNX' || A.NetName == '+3V3_KNX' || A.NetName == 'KNX_*' || A.NetName == 'MCU_PULSE' || A.NetName == 'unconnected-(U2-*' || A.NetName == 'unconnected-(U3-*') && !(B.NetName == '/2 KNX bus interface/*' || B.NetName == '/3 MCU/*' || B.NetName == 'GND_KNX' || B.NetName == '+3V3_KNX' || B.NetName == 'KNX_*' || B.NetName == 'MCU_PULSE' || B.NetName == 'unconnected-(U2-*' || B.NetName == 'unconnected-(U3-*' || B.NetName == '')"))
+(rule "Isolation aux to sensor 2 mm"
+  (constraint clearance (min 2mm))
+  (constraint hole_clearance (min 2mm))
+  (condition "(A.NetName == '/1 Aux power/*' || A.NetName == 'GND_AUX' || A.NetName == 'unconnected-(PS1-Remote*') && (B.NetName == '/4 Sensor/*' || B.NetName == 'GND_S' || B.NetName == '+12V_S' || B.NetName == 'unconnected-(U5-*' || B.NetName == 'unconnected-(PS1-NC*')"))

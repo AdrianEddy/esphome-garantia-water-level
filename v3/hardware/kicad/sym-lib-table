@@ -1,0 +1,5 @@
+(sym_lib_table
+  (version 7)
+
+  (lib (name "knx-rgbic") (type "KiCad") (uri "${KIPRJMOD}/lib/knx-rgbic.kicad_sym") (options "") (descr ""))
+  (lib (name "keystone_900") (type "KiCad") (uri "${KIPRJMOD}/lib/keystone_900.kicad_sym") (options "") (descr "")))

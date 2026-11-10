@@ -1,0 +1,688 @@
+diff --git a/src/esp32_platform.cpp b/src/esp32_platform.cpp
+index 2f0bfd9..850f61c 100644
+--- a/src/esp32_platform.cpp
++++ b/src/esp32_platform.cpp
+@@ -85,6 +85,13 @@ void Esp32Platform::restart()
+     ESP.restart();
+ }
+ 
++void Esp32Platform::fatalError()
++{
++    println("fatal error, restarting");
++    delay(100);
++    ESP.restart();
++}
++
+ void Esp32Platform::setupMultiCast(uint32_t addr, uint16_t port)
+ {
+     IPAddress mcastaddr(htonl(addr));
+diff --git a/src/esp32_platform.h b/src/esp32_platform.h
+index 3ace355..8aaf1af 100644
+--- a/src/esp32_platform.h
++++ b/src/esp32_platform.h
+@@ -26,6 +26,7 @@ class Esp32Platform : public ArduinoPlatform
+ 
+         // basic stuff
+         void restart();
++        void fatalError() override;  // knx-rgbic: restart instead of hanging the core
+ 
+         //multicast
+         void setupMultiCast(uint32_t addr, uint16_t port) override;
+diff --git a/src/knx/application_layer.cpp b/src/knx/application_layer.cpp
+index 4688ada..5144fc0 100644
+--- a/src/knx/application_layer.cpp
++++ b/src/knx/application_layer.cpp
+@@ -87,6 +87,11 @@ void ApplicationLayer::dataGroupConfirm(AckType ack, HopCountType hopType, Prior
+     switch (apdu.type())
+     {
+         case GroupValueRead:
++            // knx-rgbic: only the request that owns the slot (same TSAP); a late confirmation of a request the
++            // device gave up on (sendNextGroupTelegram()'s timeout) must not confirm the next one
++            if (_savedAsapReadRequest > 0 && _assocTable != nullptr && _assocTable->translateAsap(_savedAsapReadRequest) != (int32_t)tsap)
++                break;
++
+             if (_savedAsapReadRequest > 0)
+                 _bau.groupValueReadLocalConfirm(ack, _savedAsapReadRequest, priority, hopType, secCtrl, status);
+ 
+@@ -101,6 +106,10 @@ void ApplicationLayer::dataGroupConfirm(AckType ack, HopCountType hopType, Prior
+             break;
+ 
+         case GroupValueWrite:
++            // knx-rgbic: see GroupValueRead
++            if (_savedAsapWriteRequest > 0 && _assocTable != nullptr && _assocTable->translateAsap(_savedAsapWriteRequest) != (int32_t)tsap)
++                break;
++
+             if (_savedAsapWriteRequest > 0)
+                 _bau.groupValueWriteLocalConfirm(ack, _savedAsapWriteRequest, priority, hopType, secCtrl, apdu.data(), apdu.length() - 1, status);
+ 
+@@ -403,7 +412,10 @@ void ApplicationLayer::groupValueReadRequest(AckType ack, uint16_t asap, Priorit
+     int32_t value = _assocTable->translateAsap(asap);
+ 
+     if (value < 0)
++    {
++        _savedAsapReadRequest = 0; // knx-rgbic: nothing sent, so no confirmation will free the slot
+         return; // there is no tsap in association table for this asap
++    }
+ 
+     uint16_t tsap = (uint16_t)value;
+ 
+@@ -1032,8 +1044,19 @@ void ApplicationLayer::groupValueSend(ApduType type, AckType ack, uint16_t asap,
+         memcpy(apdudata + 1, data, dataLength);
+     }
+ 
+-    // no need to check if there is a tsap. This is a response, so the read got through
+-    uint16_t tsap = (uint16_t)_assocTable->translateAsap(asap);
++    // knx-rgbic: never send for an object without an association; translateAsap() returns -1,
++    // which would become TSAP 0xFFFF and group address 0/0/0 (broadcast).
++    int32_t translated = _assocTable->translateAsap(asap);
++    if (translated < 0)
++    {
++        // nothing sent, so no confirmation will free the slot
++        if (type == GroupValueWrite)
++            _savedAsapWriteRequest = 0;
++        else if (type == GroupValueResponse)
++            _savedAsapResponse = 0;
++        return;
++    }
++    uint16_t tsap = (uint16_t)translated;
+     dataGroupRequest(ack, hopType, priority, tsap, apdu, secCtrl);
+     dataGroupIndication(hopType, priority, tsap, apdu, secCtrl);
+ }
+diff --git a/src/knx/application_layer.h b/src/knx/application_layer.h
+index 9f8f2c5..1f034d7 100644
+--- a/src/knx/application_layer.h
++++ b/src/knx/application_layer.h
+@@ -218,6 +218,11 @@ class ApplicationLayer
+         void individualConfirm(AckType ack, HopCountType hopType, Priority priority, uint16_t tsap, APDU& apdu, const SecurityControl& secCtrl, bool status);
+         void individualSend(AckType ack, HopCountType hopType, Priority priority, uint16_t asap, APDU& apdu, const SecurityControl& secCtrl);
+ 
++        // knx-rgbic: one confirmation slot per request type, so only one group request may be in flight
++    public:
++        bool groupConfirmPending() const { return _savedAsapWriteRequest != 0 || _savedAsapReadRequest != 0; }
++        void clearGroupConfirmPending() { _savedAsapWriteRequest = 0; _savedAsapReadRequest = 0; }
++    private:
+         uint16_t _savedAsapReadRequest = 0;
+         uint16_t _savedAsapWriteRequest = 0;
+         uint16_t _savedAsapResponse = 0;
+diff --git a/src/knx/bau_systemB_device.cpp b/src/knx/bau_systemB_device.cpp
+index a852d4f..908f22c 100644
+--- a/src/knx/bau_systemB_device.cpp
++++ b/src/knx/bau_systemB_device.cpp
+@@ -57,6 +57,25 @@ void BauSystemBDevice::sendNextGroupTelegram()
+     if (!configured())
+         return;
+ 
++    // knx-rgbic: the application layer keeps one confirmation slot per request type, so a second group request
++    // sent before the first is confirmed takes the first one's confirmation, and every other object stays
++    // "Transmitting" for good. Send the next one only after the confirmation; give up on it after 3 s.
++    if (_appLayer.groupConfirmPending())
++    {
++        if (millis() - _groupTxAt < 3000)
++            return;
++
++        if (_groupTxAsap >= 1 && _groupTxAsap <= _groupObjTable.entryCount())
++        {
++            GroupObject& stuck = _groupObjTable.get(_groupTxAsap);
++
++            if (stuck.commFlag() == Transmitting)
++                stuck.commFlag(Error);
++        }
++
++        _appLayer.clearGroupConfirmPending();
++    }
++
+     static uint16_t startIdx = 1;
+ 
+     GroupObjectTableObject& table = _groupObjTable;
+@@ -90,6 +109,14 @@ void BauSystemBDevice::sendNextGroupTelegram()
+             continue;
+         }
+ 
++        // knx-rgbic: an object without a group address has no TSAP; sending it would put
++        // a telegram on 0/0/0 (broadcast). Drop it and mark it done.
++        if (_assocTable.translateAsap(asap) < 0)
++        {
++            go.commFlag(Ok);
++            continue;
++        }
++
+         SecurityControl goSecurity;
+         goSecurity.toolAccess = false; // Secured group communication never uses the toolkey. ETS knows all keys, also the group keys.
+ 
+@@ -100,6 +127,12 @@ void BauSystemBDevice::sendNextGroupTelegram()
+         goSecurity.dataSecurity = DataSecurity::None;
+ #endif
+ 
++        // knx-rgbic: Transmitting is set before the request, so a confirmation that arrives synchronously (bus
++        // disconnected, queue full) isn't overwritten; an object without the T flag has nothing to send.
++        go.commFlag(Transmitting);
++        _groupTxAsap = asap;
++        _groupTxAt = millis();
++
+         if (flag == WriteRequest && go.transmitEnable())
+         {
+             uint8_t* data = go.valueRef();
+@@ -110,8 +143,10 @@ void BauSystemBDevice::sendNextGroupTelegram()
+         {
+             _appLayer.groupValueReadRequest(AckRequested, asap, go.priority(), NetworkLayerParameter, goSecurity);
+         }
+-
+-        go.commFlag(Transmitting);
++        else
++        {
++            go.commFlag(Ok);
++        }
+ 
+         startIdx = asap + 1;
+         return;
+diff --git a/src/knx/bau_systemB_device.h b/src/knx/bau_systemB_device.h
+index 4e5e283..8e9dfdd 100644
+--- a/src/knx/bau_systemB_device.h
++++ b/src/knx/bau_systemB_device.h
+@@ -23,6 +23,8 @@ class BauSystemBDevice : public BauSystemB
+         void loop() override;
+         bool configured() override;
+         GroupObjectTableObject& groupObjectTable();
++        // knx-rgbic: true if the object has at least one group address (association)
++        bool isGroupObjectLinked(uint16_t asap) { return _assocTable.translateAsap(asap) >= 0; }
+ 
+     protected:
+         ApplicationLayer& applicationLayer() override;
+@@ -37,6 +39,8 @@ class BauSystemBDevice : public BauSystemB
+                                        uint8_t* data, uint8_t dataLength) override;
+ 
+         void sendNextGroupTelegram();
++        uint16_t _groupTxAsap = 0;  // knx-rgbic: the group request in flight
++        uint32_t _groupTxAt = 0;
+         void updateGroupObject(GroupObject& go, uint8_t* data, uint8_t length);
+ 
+         void doMasterReset(EraseCode eraseCode, uint8_t channel) override;
+diff --git a/src/knx/bits.h b/src/knx/bits.h
+index 6eee917..1e45bc6 100644
+--- a/src/knx/bits.h
++++ b/src/knx/bits.h
+@@ -5,7 +5,8 @@
+ 
+ #if defined(__linux__)
+     #include <arpa/inet.h>
+-#elif defined(ARDUINO_ARCH_SAMD) || defined(ARDUINO_ARCH_STM32) || defined (DeviceFamily_CC13X0)
++#elif defined(ARDUINO_ARCH_SAMD) || defined(ARDUINO_ARCH_STM32) || defined (DeviceFamily_CC13X0) || defined(KNX_BARE_METAL)
++    // knx-rgbic: KNX_BARE_METAL = no Arduino core, no OS (the knx-rgbic U9 STM32G0 build)
+     #define getbyte(x,n) (*(((uint8_t*)&(x))+n))
+     #define htons(x)  ( (getbyte(x,0)<<8) | getbyte(x,1) )
+     #define htonl(x) ( (getbyte(x,0)<<24) | (getbyte(x,1)<<16) | (getbyte(x,2)<<8) | getbyte(x,3) )
+diff --git a/src/knx/memory.cpp b/src/knx/memory.cpp
+index 2963f4e..2cc4830 100644
+--- a/src/knx/memory.cpp
++++ b/src/knx/memory.cpp
+@@ -452,9 +452,11 @@ void Memory::addToFreeList(MemoryBlock* block)
+     // now check block and block->next
+     if ((block->address + block->size) == block->next->address)
+     {
+-        block->size += block->next->size;
+-        block->next = block->next->next;
+-        delete block->next;
++        // knx-rgbic: delete the merged node, not its successor
++        MemoryBlock* merged = block->next;
++        block->size += merged->size;
++        block->next = merged->next;
++        delete merged;
+     }
+ }
+ 
+diff --git a/src/knx/platform.cpp b/src/knx/platform.cpp
+index a98d2e9..eb745d6 100644
+--- a/src/knx/platform.cpp
++++ b/src/knx/platform.cpp
+@@ -62,6 +62,11 @@ bool Platform::overflowUart()
+     return false;
+ }
+ 
++bool Platform::uartByteError()
++{
++    return false;
++}
++
+ void Platform::flushUart()
+ {}
+ 
+@@ -259,61 +264,31 @@ uint32_t Platform::readNonVolatileMemory(uint32_t relativeAddress, uint8_t* buff
+ 
+     if (_memoryType == Flash)
+     {
+-        uint32_t offset = 0;
++        // knx-rgbic: rewritten. Upstream mixed erase-block numbers with byte offsets (it multiplied the
++        // block number by flashEraseBlockSize() only, i.e. in pages, not bytes) and, when a read spanned the
++        // buffered block from the left, skipped the buffered (newer) data. ETS reads parameters back right
++        // after writing them (Verify="true"), which is exactly the case with a dirty buffered block.
++        // Every byte now comes from the buffered erase block if it holds that address, else from flash.
++        const uint32_t blockBytes = flashEraseBlockSize() * flashPageSize();
++        const uint8_t* flash = userFlashStart();
+ 
+         while (size > 0)
+         {
+-            // bufferd block is "left" of requested memory, read until the end and return
+-            if (_bufferedEraseblockNumber < getEraseBlockNumberOf(relativeAddress))
+-            {
+-                memcpy(buffer + offset, userFlashStart() + relativeAddress, size);
+-                return relativeAddress + size;
+-            }
+-            // bufferd block is "right" of requested memory, and may interfere
+-            else if (_bufferedEraseblockNumber > getEraseBlockNumberOf(relativeAddress))
+-            {
+-                // if the end of the requested memory is before the buffered block, read until the end and return
+-                int32_t eraseblockNumberEnd = getEraseBlockNumberOf(relativeAddress + size - 1);
+-
+-                if (_bufferedEraseblockNumber > eraseblockNumberEnd)
+-                {
+-                    memcpy(buffer + offset, userFlashStart() + relativeAddress, size);
+-                    return relativeAddress + size;
+-                }
+-                // if not, read until the buffered block starts and loop through while again
+-                else
+-                {
+-                    uint32_t sizeToRead = (eraseblockNumberEnd * flashEraseBlockSize()) - relativeAddress;
+-                    memcpy(buffer + offset, userFlashStart() + relativeAddress, sizeToRead);
+-                    relativeAddress += sizeToRead;
+-                    size -= sizeToRead;
+-                    offset += sizeToRead;
+-                }
+-            }
+-            // start of requested memory is within the buffered erase block
++            const int32_t block = getEraseBlockNumberOf(relativeAddress);
++            const uint32_t blockStart = (uint32_t)block * blockBytes;
++            uint32_t chunk = blockStart + blockBytes - relativeAddress;
++
++            if (chunk > size)
++                chunk = size;
++
++            if (block == _bufferedEraseblockNumber && _eraseblockBuffer != nullptr)
++                memcpy(buffer, _eraseblockBuffer + (relativeAddress - blockStart), chunk);
+             else
+-            {
+-                // if the end of the requested memory is also in the buffered block, read until the end and return
+-                int32_t eraseblockNumberEnd = getEraseBlockNumberOf(relativeAddress + size - 1);
+-
+-                if (_bufferedEraseblockNumber == eraseblockNumberEnd)
+-                {
+-                    uint8_t* start = _eraseblockBuffer + (relativeAddress - _bufferedEraseblockNumber * flashEraseBlockSize());
+-                    memcpy(buffer + offset, start, size);
+-                    return relativeAddress + size;
+-                }
+-                // if not, read until the end of the buffered block and loop through while again
+-                else
+-                {
+-                    uint32_t offsetInBufferedBlock = relativeAddress - _bufferedEraseblockNumber * flashEraseBlockSize();
+-                    uint8_t* start = _eraseblockBuffer + offsetInBufferedBlock;
+-                    uint32_t sizeToRead = flashEraseBlockSize() - offsetInBufferedBlock;
+-                    memcpy(buffer + offset, start, sizeToRead);
+-                    relativeAddress += sizeToRead;
+-                    size -= sizeToRead;
+-                    offset += sizeToRead;
+-                }
+-            }
++                memcpy(buffer, flash + relativeAddress, chunk);
++
++            buffer += chunk;
++            relativeAddress += chunk;
++            size -= chunk;
+         }
+ 
+         return relativeAddress;
+diff --git a/src/knx/platform.h b/src/knx/platform.h
+index d60af19..6a302dd 100644
+--- a/src/knx/platform.h
++++ b/src/knx/platform.h
+@@ -64,6 +64,8 @@ class Platform
+         virtual int readUart();
+         virtual size_t readBytesUart(uint8_t* buffer, size_t length);
+         virtual bool overflowUart();
++        // knx-rgbic: true if the byte last returned by readUart() had a parity or framing error
++        virtual bool uartByteError();
+         virtual void flushUart();
+ 
+         // SPI
+diff --git a/src/knx/tpuart_data_link_layer.cpp b/src/knx/tpuart_data_link_layer.cpp
+index 12a8673..41629de 100644
+--- a/src/knx/tpuart_data_link_layer.cpp
++++ b/src/knx/tpuart_data_link_layer.cpp
+@@ -113,7 +113,10 @@
+ enum
+ {
+     TX_IDLE,
+-    TX_FRAME
++    TX_FRAME,
++    // knx-rgbic: L_DATA_CON arrived (possibly in the UART interrupt); loop() completes the frame. Completion
++    // allocates, calls the upper layers and frees the frame, none of which may run in an interrupt.
++    TX_DONE
+ };
+ 
+ enum
+@@ -186,6 +189,12 @@ void TpUartDataLinkLayer::processRxByte()
+     if (byte < 0)
+         return;
+ 
++    // knx-rgbic: in 9-bit UART mode the NCN5130 reports bus errors (acceptance window, pulse duration) only by
++    // a wrong parity bit on the byte concerned; U_FrameState.ind exists only in 8-bit mode (NCN5130 DS, "UART
++    // Interface"). A frame with such a byte must not reach the upper layers, even if its checksum matches.
++    // Outside frames the parity is ignored: internal register services don't use it.
++    _rxByteError = _platform.uartByteError();
++
+     /*
+      * If I am in RX_INVALID mode
+      * and the last byte was processed more than 2ms ago (i.e. pause >2ms)
+@@ -241,6 +250,9 @@ void TpUartDataLinkLayer::processRxByte()
+         processRxFrameComplete();
+         _rxFrame->addByte(byte);
+ 
++        if (_rxByteError) // knx-rgbic
++            _rxFrame->addFlags(TP_FRAME_FLAG_INVALID);
++
+         // Provoke invalid frames for tests
+         // if (millis() % 20 == 0)
+         //     _rxFrame->addByte(0x1);
+@@ -256,7 +268,7 @@ void TpUartDataLinkLayer::processRxByte()
+          * Of course, you can only do this if you are not sending yourself, as you do not ACK your own frames. The BCU may ignore this,
+          * but I wanted to be on the safe side here.
+          */
+-        if (_txState == TX_IDLE)
++        if (_txState != TX_FRAME) // knx-rgbic: TX_DONE isn't sending either
+         {
+             _platform.writeUart(U_ACK_REQ);
+         }
+@@ -268,6 +280,10 @@ void TpUartDataLinkLayer::processRxByte()
+         if (byte == U_RESET_IND)
+         {
+             // println("U_RESET_IND");
++            // knx-rgbic: the NCN5130 reset itself (bus dip, thermal shutdown): its registers are back at their
++            // defaults. loop() runs reset() again, which re-sends ACR0 and the address (reset() reads its own
++            // U_Reset.ind with the interrupt path locked, so this doesn't loop).
++            _ncnResetSeen = true;
+         }
+         else if ((byte & U_STATE_MASK) == U_STATE_IND)
+         {
+@@ -312,8 +328,9 @@ void TpUartDataLinkLayer::processRxByte()
+         {
+             if (_txState == TX_FRAME)
+             {
+-                const bool success = ((byte ^ L_DATA_CON_MASK) >> 7);
+-                processTxFrameComplete(success);
++                // knx-rgbic: record only; loop() runs processTxFrameComplete() outside the interrupt
++                _txConSuccess = ((byte ^ L_DATA_CON_MASK) >> 7);
++                _txState = TX_DONE;
+             }
+             else
+             {
+@@ -364,6 +381,13 @@ void TpUartDataLinkLayer::processRxFrameByte(uint8_t byte)
+     else if (_rxMarker && (byte & U_FRAME_STATE_MASK) == U_FRAME_STATE_IND)
+     {
+         _rxMarker = false;
++
++        // knx-rgbic: U_FrameState.ind reports parity, checksum/length and timing errors (8-bit mode with markers
++        // only; this build runs 9-bit mode without markers, where the parity bit carries the errors, see
++        // processRxByte()). Such a frame must not reach the upper layers, even if its XOR checksum matches.
++        if (byte & (PARITY_BIT_ERROR | CHECKSUM_LENGTH_ERROR | TIMING_ERROR))
++            _rxFrame->addFlags(TP_FRAME_FLAG_INVALID);
++
+         processRxFrameComplete();
+ 
+         /*
+@@ -401,6 +425,9 @@ void TpUartDataLinkLayer::processRxFrameByte(uint8_t byte)
+         // Accept the byte
+         _rxFrame->addByte(byte);
+ 
++        if (_rxByteError) // knx-rgbic
++            _rxFrame->addFlags(TP_FRAME_FLAG_INVALID);
++
+         // If the bus monitor has been started, no processing takes place - i.e. no ACKing
+         if (!_monitoring)
+         {
+@@ -421,7 +448,7 @@ void TpUartDataLinkLayer::processRxFrameByte(uint8_t byte)
+                     _rxFrame->addFlags(TP_FRAME_FLAG_ADDRESSED);
+ 
+                     // Of course, this is only allowed if I am not sending myself, as you cannot ACK your own frames
+-                    if (_txState == TX_IDLE)
++                    if (_txState != TX_FRAME) // knx-rgbic: TX_DONE isn't sending either
+                     {
+                         // Save that Acking should take place
+                         _rxFrame->addFlags(TP_FRAME_FLAG_ACK);
+@@ -440,7 +467,7 @@ void TpUartDataLinkLayer::processRxFrameByte(uint8_t byte)
+                 if (availableInRxQueue() < (_rxFrame->size() + 3))
+                 {
+                     // Only if I am not sending myself
+-                    if (_txState == TX_IDLE)
++                    if (_txState != TX_FRAME) // knx-rgbic
+                     {
+                         _platform.writeUart(U_ACK_REQ | U_ACK_REQ_ADRESSED | U_ACK_REQ_BUSY);
+                     }
+@@ -479,7 +506,7 @@ void TpUartDataLinkLayer::processRxFrameComplete()
+     if (_rxFrame->isValid())
+     {
+         // When a frame has been sent
+-        if (_txState == TX_FRAME)
++        if (_txState != TX_IDLE && _txFrame != nullptr) // knx-rgbic: also while TX_DONE waits for loop()
+         {
+             // check whether the receive corresponds to this: comparison of the source address and destination address and start byte without taking the retry bit into account
+             if (!((_rxFrame->data(0) ^ _txFrame->data(0)) & ~0x20) && _rxFrame->destination() == _txFrame->destination() && _rxFrame->source() == _txFrame->source())
+@@ -551,15 +578,51 @@ void TpUartDataLinkLayer::clearTxFrameQueue()
+ {
+ }
+ 
++// knx-rgbic: the caller holds the RX lock (reset()) or calls completeTxDone(), which takes it. The frame is
++// detached first, so the interrupt never sees a frame that is being converted or freed.
+ void TpUartDataLinkLayer::processTxFrameComplete(bool success)
+ {
+-    uint8_t* cemiData = _txFrame->cemiData();
+-    CemiFrame cemiFrame(cemiData, _txFrame->cemiSize());
++    TpFrame* frame = _txFrame;
++    _txFrame = nullptr;
++    _txState = TX_IDLE;
++    if (frame != nullptr)
++        finishTxFrame(frame, success);
++}
++
++void TpUartDataLinkLayer::finishTxFrame(TpFrame* frame, bool success)
++{
++    uint8_t* cemiData = frame->cemiData();
++    CemiFrame cemiFrame(cemiData, frame->cemiSize());
+     dataConReceived(cemiFrame, success);
+     free(cemiData);
+-    clearTxFrame();
++    delete frame;
+     _txProcessdFrameCounter++;
+-    _txState = TX_IDLE;
++}
++
++// knx-rgbic: main loop only. Detaches a confirmed (or timed-out) frame under the RX lock, then completes it
++// with the lock released: callbacks and malloc/free never run in the interrupt or under the lock.
++void TpUartDataLinkLayer::completeTxDone()
++{
++    if (_txState != TX_DONE)
++        return;
++
++    if (!isrLock())
++        return;
++
++    TpFrame* frame = nullptr;
++    bool success = _txConSuccess;
++
++    if (_txState == TX_DONE)
++    {
++        frame = _txFrame;
++        _txFrame = nullptr;
++        _txState = TX_IDLE;
++    }
++
++    isrUnlock();
++
++    if (frame != nullptr)
++        finishTxFrame(frame, success);
+ }
+ 
+ /*
+@@ -633,6 +696,12 @@ void TpUartDataLinkLayer::requestState(bool force /* = false */)
+ 
+     // println("requestState");
+ 
++    // knx-rgbic: hold the RX lock while writing multi-byte services (U_SetAddress + 2 address bytes +
++    // dummy, U_SetRepetition + 3 bytes). With processRx() running from the UART interrupt, an ACK
++    // (U_AckInformation) written by the ISR could otherwise land between a service and its data bytes.
++    // On a single core the flag can only be set here by our own caller (reset() holds it already).
++    const bool ownLock = isrLock();
++
+     // Send configuration or mode
+     if (_monitoring)
+         _platform.writeUart(U_BUSMON_REQ);
+@@ -643,6 +712,9 @@ void TpUartDataLinkLayer::requestState(bool force /* = false */)
+     if (!_monitoring)
+         _platform.writeUart(U_STATE_REQ);
+ 
++    if (ownLock)
++        isrUnlock();
++
+     _lastStateRequest = millis();
+ }
+ 
+@@ -745,8 +817,13 @@ bool TpUartDataLinkLayer::reset()
+ 
+     // Reset
+     resetStats();
+-    clearTxFrame();
++    // knx-rgbic: confirm a frame in flight instead of just deleting it, or its group object stays
++    // "Transmitting" for good (the application waits for the confirmation before it sends the next value).
++    if (_txFrame != nullptr)
++        processTxFrameComplete(_txState == TX_DONE && _txConSuccess);
+     clearTxFrameQueue();
++    _txState = TX_IDLE; // knx-rgbic: the frame is gone; a pending TX_FRAME/TX_DONE would dereference nullptr
++    _ncnResetSeen = false;
+ 
+     if (_rxFrame != nullptr)
+     {
+@@ -774,17 +851,25 @@ bool TpUartDataLinkLayer::reset()
+         if (byte == -1)
+             continue; // empty
+ 
+-        if (byte & U_RESET_IND)
++        // knx-rgbic: match U_Reset.ind exactly (was byte & 0x03, which accepts most bytes)
++        if (byte == U_RESET_IND)
+         {
+             success = true;
+             break; // next run for U_CONFIGURE_IND
+         }
+-    } while (!((millis() - start) >= 10));
++        // knx-rgbic: the NCN sends U_Reset.ind only after 40 bit times of bus silence; allow for a frame in progress
++    } while (!((millis() - start) >= 100));
+ 
+     connected(success);
+ 
+     if (success)
+     {
++#ifdef KNX_NCN_ACR0
++        // knx-rgbic: Analog Control Register 0 (NCN5121 DS Table 16): e.g. 0x04 clears XCLKEN, DC2EN, V20VEN.
++        // Only for boards wired as design.md Sheet 2; never on modules that use DC2 or the 20 V LDO.
++        _platform.writeUart(U_INT_REG_WR_REQ_ACR0);
++        _platform.writeUart(KNX_NCN_ACR0);
++#endif
+         _lastStateRequest = 0; // Force
+         requestState(true);
+         _rxLastTime = millis();
+@@ -854,8 +939,18 @@ bool TpUartDataLinkLayer::enabled() const
+  */
+ void TpUartDataLinkLayer::clearOutdatedTxFrame()
+ {
++    // knx-rgbic: under the RX lock, so a confirmation arriving in the interrupt can't race the timeout;
++    // either way the frame is completed exactly once, by loop().
++    if (!isrLock())
++        return;
++
+     if (_txState == TX_FRAME && (millis() - _txLastTime) > 1000)
+-        processTxFrameComplete(false);
++    {
++        _txConSuccess = false;
++        _txState = TX_DONE;
++    }
++
++    isrUnlock();
+ }
+ 
+ /*
+@@ -959,8 +1054,16 @@ void TpUartDataLinkLayer::loop()
+     processRxQueue();
+ #endif
+ 
++    // knx-rgbic: the NCN5130 reported U_Reset.ind outside reset(): initialise it again
++    if (_ncnResetSeen)
++        reset();
++
++    // knx-rgbic: complete a confirmed (or timed-out) frame here, never in the interrupt
++    completeTxDone();
++
+     requestState();
+     clearOutdatedTxFrame();
++    completeTxDone();
+     processTxQueue();
+     checkConnected();
+ }
+@@ -1208,11 +1311,19 @@ void TpUartDataLinkLayer::pushRxFrameQueue()
+ 
+ void TpUartDataLinkLayer::processRxQueue()
+ {
+-    if (!isrLock())
+-        return;
+-
+-    while (_rxBufferCount)
++    // knx-rgbic: take one frame out under the lock, then dispatch it with the lock released, so the UART
++    // interrupt keeps processing bytes and deciding ACKs while the upper layers (callbacks, memory writes) run.
++    while (true)
+     {
++        if (!isrLock())
++            return;
++
++        if (!_rxBufferCount)
++        {
++            isrUnlock();
++            return;
++        }
++
+         const uint16_t size = pullByteFromRxQueue() + (pullByteFromRxQueue() << 8);
+         TpFrame tpFrame = TpFrame(size);
+         tpFrame.addFlags(pullByteFromRxQueue());
+@@ -1220,12 +1331,12 @@ void TpUartDataLinkLayer::processRxQueue()
+         for (uint16_t i = 0; i < size; i++)
+             tpFrame.addByte(pullByteFromRxQueue());
+ 
+-        processRxFrame(&tpFrame);
+         asm volatile("" ::: "memory");
+         _rxBufferCount--;
+-    }
++        isrUnlock();
+ 
+-    isrUnlock();
++        processRxFrame(&tpFrame);
++    }
+ }
+ 
+ void TpUartDataLinkLayer::pushByteToRxQueue(uint8_t byte)
+diff --git a/src/knx/tpuart_data_link_layer.h b/src/knx/tpuart_data_link_layer.h
+index 77fe0ef..66a36e1 100644
+--- a/src/knx/tpuart_data_link_layer.h
++++ b/src/knx/tpuart_data_link_layer.h
+@@ -105,6 +105,9 @@ class TpUartDataLinkLayer : public DataLinkLayer
+ 
+         volatile uint8_t _rxState = 0;
+         volatile uint8_t _txState = 0;
++        volatile bool _txConSuccess = false; // knx-rgbic: result of the L_DATA_CON that set TX_DONE
++        volatile bool _ncnResetSeen = false; // knx-rgbic: U_Reset.ind seen by the interrupt path
++        bool _rxByteError = false;           // knx-rgbic: the byte being processed had a UART parity/framing error
+         volatile uint32_t _rxProcessdFrameCounter = 0;
+         volatile uint32_t _rxInvalidFrameCounter = 0;
+         volatile uint32_t _rxIgnoredFrameCounter = 0;
+@@ -173,6 +176,8 @@ class TpUartDataLinkLayer : public DataLinkLayer
+         void clearTxFrame();
+         void clearOutdatedTxFrame();
+         void processTxFrameComplete(bool success);
++        void finishTxFrame(TpFrame* frame, bool success); // knx-rgbic
++        void completeTxDone();                            // knx-rgbic
+ 
+         ITpUartCallBacks& _cb;
+         DataLinkLayerCallbacks* _dllcb;
